@@ -33,6 +33,7 @@ public class ElasticsearchConfigurationScript implements ElasticsearchConfigurat
 
         /**
          * Whether to include vector fields in the search response (from Elasticsearch 9.2).
+         * Only useful for tests. Not recommended at all to use that in production.
          *
          * @param includeVectorResponse true to include vector fields, false otherwise
          * @return the builder instance
@@ -53,11 +54,6 @@ public class ElasticsearchConfigurationScript implements ElasticsearchConfigurat
 
     private ElasticsearchConfigurationScript(final boolean includeVectorResponse) {
         this.includeVectorResponse = includeVectorResponse;
-    }
-
-    @Override
-    public boolean isIncludeVectorResponse() {
-        return includeVectorResponse;
     }
 
     @Override

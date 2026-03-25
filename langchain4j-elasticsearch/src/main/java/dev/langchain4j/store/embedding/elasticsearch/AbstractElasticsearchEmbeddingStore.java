@@ -6,7 +6,6 @@ import static dev.langchain4j.internal.ValidationUtils.ensureNotEmpty;
 import static dev.langchain4j.internal.ValidationUtils.ensureNotNull;
 import static dev.langchain4j.internal.ValidationUtils.ensureTrue;
 import static java.util.Collections.singletonList;
-import static java.util.stream.Collectors.toList;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.BulkIndexByScrollFailure;
@@ -26,7 +25,6 @@ import co.elastic.clients.transport.rest_client.RestClientTransport;
 import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
-import dev.langchain4j.rag.content.ContentMetadata;
 import dev.langchain4j.store.embedding.EmbeddingMatch;
 import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
 import dev.langchain4j.store.embedding.EmbeddingSearchResult;
@@ -123,7 +121,7 @@ public abstract class AbstractElasticsearchEmbeddingStore implements EmbeddingSt
     }
 
     public List<String> addAllText(List<String> texts) {
-        List<String> ids = texts.stream().map(ignored -> randomUUID()).collect(toList());
+        List<String> ids = texts.stream().map(ignored -> randomUUID()).toList();
         try {
             bulkIndexText(ids, texts.stream().map(TextSegment::from).toList());
         } catch (IOException e) {
@@ -141,7 +139,7 @@ public abstract class AbstractElasticsearchEmbeddingStore implements EmbeddingSt
 
     @Override
     public List<String> addAll(List<Embedding> embeddings) {
-        List<String> ids = embeddings.stream().map(ignored -> randomUUID()).collect(toList());
+        List<String> ids = embeddings.stream().map(ignored -> randomUUID()).toList();
         addAll(ids, embeddings, null);
         return ids;
     }
@@ -158,55 +156,20 @@ public abstract class AbstractElasticsearchEmbeddingStore implements EmbeddingSt
                     this.configuration.vectorSearch(client, indexName, embeddingSearchRequest);
             log.trace("found [{}] results", response);
 
-            List<EmbeddingMatch<TextSegment>> results = toMatches(response);
-            results.forEach(em -> log.debug("doc [{}] scores [{}]", em.embeddingId(), em.score()));
+            List<EmbeddingMatch<TextSegment>> results = response.hits().hits().stream()
+                    .map(hit -> Optional.ofNullable(hit.source())
+                            .map(document -> new EmbeddingMatch<>(
+                                    hit.score(),
+                                    hit.id(),
+                                    new Embedding(Optional.ofNullable(document.getVector())
+                                            .orElse(new float[] {})),
+                                    document.getText() == null
+                                            ? null
+                                            : TextSegment.from(
+                                                    document.getText(), new Metadata(document.getMetadata()))))
+                            .orElse(null))
+                    .toList();
             return new EmbeddingSearchResult<>(results);
-        } catch (ElasticsearchException e) {
-            if (e.getLocalizedMessage().contains("Unknown key for a VALUE_BOOLEAN in [exclude_vectors]")
-                    && this.configuration.isIncludeVectorResponse()) {
-                log.warn(
-                        "Property [includeVectorResponse] is not needed for elasticsearch server versions previous to 9.2, remove it to fix the exception.");
-            }
-            throw new ElasticsearchRequestFailedException(e);
-        } catch (IOException e) {
-            throw new ElasticsearchRequestFailedException(e);
-        }
-    }
-
-    public EmbeddingSearchResult<TextSegment> hybridSearch(
-            EmbeddingSearchRequest embeddingSearchRequest, String textQuery) {
-        log.debug(
-                "hybrid search([...{}...], {}, {})",
-                embeddingSearchRequest.queryEmbedding().vector().length,
-                embeddingSearchRequest.maxResults(),
-                embeddingSearchRequest.minScore());
-        try {
-            SearchResponse<Document> response =
-                    this.configuration.hybridSearch(client, indexName, embeddingSearchRequest, textQuery);
-            log.trace("found [{}] results", response);
-
-            List<EmbeddingMatch<TextSegment>> results = toMatches(response);
-            results.forEach(em -> log.debug("doc [{}] scores [{}]", em.embeddingId(), em.score()));
-            return new EmbeddingSearchResult<>(results);
-        } catch (ElasticsearchException e) {
-            if (e.getLocalizedMessage().contains("Unknown key for a VALUE_BOOLEAN in [exclude_vectors]")
-                    && this.configuration.isIncludeVectorResponse()) {
-                log.warn(
-                        "Property [includeVectorResponse] is not needed for elasticsearch server versions previous to 9.2, remove it to fix the exception.");
-            }
-            throw new ElasticsearchRequestFailedException(e);
-        } catch (IOException e) {
-            throw new ElasticsearchRequestFailedException(e);
-        }
-    }
-
-    public List<TextSegment> fullTextSearch(String textQuery) {
-        log.debug("full text search([...{}...])", textQuery.length());
-        try {
-            SearchResponse<Document> response = this.configuration.fullTextSearch(client, indexName, textQuery);
-            log.trace("found [{}] results", response);
-
-            return toTextList(response);
         } catch (ElasticsearchException | IOException e) {
             throw new ElasticsearchRequestFailedException(e);
         }
@@ -349,33 +312,5 @@ public abstract class AbstractElasticsearchEmbeddingStore implements EmbeddingSt
         }
         BulkResponse response = client.bulk(bulkBuilder.build());
         handleBulkResponseErrors(response);
-    }
-
-    private List<EmbeddingMatch<TextSegment>> toMatches(SearchResponse<Document> response) {
-        return response.hits().hits().stream()
-                .map(hit -> Optional.ofNullable(hit.source())
-                        .map(document -> new EmbeddingMatch<>(
-                                hit.score(),
-                                hit.id(),
-                                new Embedding(Optional.ofNullable(document.getVector())
-                                        .orElse(new float[] {})),
-                                document.getText() == null
-                                        ? null
-                                        : TextSegment.from(document.getText(), new Metadata(document.getMetadata()))))
-                        .orElse(null))
-                .collect(toList());
-    }
-
-    private List<TextSegment> toTextList(SearchResponse<Document> response) {
-        return response.hits().hits().stream()
-                .map(hit -> Optional.ofNullable(hit.source())
-                        .filter(document -> document.getText() != null)
-                        .map(document -> TextSegment.from(
-                                document.getText(),
-                                new Metadata(document.getMetadata())
-                                        .put(ContentMetadata.SCORE.name(), hit.score())
-                                        .put(ContentMetadata.EMBEDDING_ID.name(), hit.id())))
-                        .orElse(null))
-                .collect(toList());
     }
 }

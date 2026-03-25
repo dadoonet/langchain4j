@@ -5,8 +5,16 @@ import co.elastic.clients.elasticsearch._types.ElasticsearchException;
 import co.elastic.clients.elasticsearch._types.KnnQuery;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.search.SourceConfig;
+import dev.langchain4j.data.document.Metadata;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.rag.content.Content;
+import dev.langchain4j.rag.content.ContentMetadata;
+import dev.langchain4j.rag.query.Query;
 import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
 import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,6 +52,7 @@ public class ElasticsearchConfigurationKnn implements ElasticsearchConfiguration
 
         /**
          * Whether to include vector fields in the search response (from Elasticsearch 9.2).
+         * Only useful for tests. Not recommended at all to use that in production.
          *
          * @param includeVectorResponse true to include vector fields, false otherwise
          * @return the builder instance
@@ -56,11 +65,6 @@ public class ElasticsearchConfigurationKnn implements ElasticsearchConfiguration
 
     public static ElasticsearchConfigurationKnn.Builder builder() {
         return new Builder();
-    }
-
-    @Override
-    public boolean isIncludeVectorResponse() {
-        return includeVectorResponse;
     }
 
     private ElasticsearchConfigurationKnn(final Integer numCandidates, final boolean includeVectorResponse) {
@@ -100,5 +104,49 @@ public class ElasticsearchConfigurationKnn implements ElasticsearchConfiguration
                         .query(q -> q.knn(knn))
                         .minScore(embeddingSearchRequest.minScore()),
                 Document.class);
+    }
+
+    @Override
+    public List<Content> retrieve(
+            final ElasticsearchClient client,
+            final String indexName,
+            final Query query,
+            final Supplier<EmbeddingSearchRequest> embeddingSupplier) {
+        log.debug("retrieving with knn search([...{}...])", query.text());
+        try {
+            final EmbeddingSearchRequest request = embeddingSupplier.get();
+            SearchResponse<Document> response = vectorSearch(client, indexName, request);
+            log.trace("found [{}] results", response);
+
+            List<Content> result = response.hits().hits().stream()
+                    .filter(hit -> hit.source() != null)
+                    .filter(hit -> hit.score()
+                            > request.minScore()) // I don't think this is needed as ES is filtering it anyway
+                    .map(hit -> {
+                        Document document = hit.source();
+                        TextSegment textSegment = document.getText() == null
+                                ? null
+                                : TextSegment.from(document.getText(), new Metadata(document.getMetadata()));
+
+                        return Content.from(
+                                textSegment,
+                                Map.of(
+                                        ContentMetadata.SCORE, hit.score(),
+                                        ContentMetadata.EMBEDDING_ID, hit.id()));
+                    })
+                    .toList();
+
+            log.debug("Found [{}] relevant documents in Elasticsearch index [{}].", result.size(), indexName);
+            return result;
+        } catch (ElasticsearchException e) {
+            String message = String.valueOf(e.getLocalizedMessage());
+            if (includeVectorResponse && message.contains("Unknown key for a VALUE_BOOLEAN in [exclude_vectors]")) {
+                log.warn(
+                        "Property [includeVectorResponse] is not needed for elasticsearch server versions previous to 9.2, remove it to fix the exception.");
+            }
+            throw new ElasticsearchRequestFailedException(e);
+        } catch (IOException e) {
+            throw new ElasticsearchRequestFailedException(e);
+        }
     }
 }

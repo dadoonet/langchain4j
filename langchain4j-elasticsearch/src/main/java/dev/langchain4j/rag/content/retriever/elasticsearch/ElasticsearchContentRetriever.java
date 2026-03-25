@@ -2,15 +2,11 @@ package dev.langchain4j.rag.content.retriever.elasticsearch;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import dev.langchain4j.data.document.Metadata;
-import dev.langchain4j.data.embedding.Embedding;
-import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.rag.content.Content;
-import dev.langchain4j.rag.content.ContentMetadata;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.query.Query;
 import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
-import dev.langchain4j.store.embedding.EmbeddingSearchResult;
 import dev.langchain4j.store.embedding.elasticsearch.AbstractElasticsearchEmbeddingStore;
 import dev.langchain4j.store.embedding.elasticsearch.ElasticsearchConfiguration;
 import dev.langchain4j.store.embedding.elasticsearch.ElasticsearchConfigurationFullText;
@@ -19,7 +15,6 @@ import dev.langchain4j.store.embedding.elasticsearch.ElasticsearchConfigurationK
 import dev.langchain4j.store.embedding.elasticsearch.ElasticsearchConfigurationScript;
 import dev.langchain4j.store.embedding.filter.Filter;
 import java.util.List;
-import java.util.Map;
 import org.elasticsearch.client.RestClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -101,43 +96,16 @@ public class ElasticsearchContentRetriever extends AbstractElasticsearchEmbeddin
 
     @Override
     public List<Content> retrieve(final Query query) {
-        if (configuration instanceof ElasticsearchConfigurationFullText) {
-            log.debug("Using a full text search query");
-            return this.fullTextSearch(query.text()).stream()
-                    .map(t -> Content.from(
-                            t,
-                            Map.of(
-                                    ContentMetadata.SCORE, t.metadata().getDouble(ContentMetadata.SCORE.name()),
-                                    ContentMetadata.EMBEDDING_ID,
-                                            t.metadata().getString(ContentMetadata.EMBEDDING_ID.name()))))
-                    .toList();
-        }
-        Embedding referenceEmbedding = embeddingModel.embed(query.text()).content();
-        EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
-                .queryEmbedding(referenceEmbedding)
-                .maxResults(maxResults)
-                .minScore(minScore)
-                .filter(filter)
-                .build();
-
-        if (configuration instanceof ElasticsearchConfigurationHybrid) {
-            return mapResultsToContentList(this.hybridSearch(request, query.text()));
-        }
-
-        return mapResultsToContentList(this.search(request));
-    }
-
-    private List<Content> mapResultsToContentList(EmbeddingSearchResult<TextSegment> searchResult) {
-        List<Content> result = searchResult.matches().stream()
-                .filter(f -> f.score() > minScore)
-                .map(m -> Content.from(
-                        m.embedded(),
-                        Map.of(
-                                ContentMetadata.SCORE, m.score(),
-                                ContentMetadata.EMBEDDING_ID, m.embeddingId())))
-                .toList();
-        log.debug("Found [{}] relevant documents in Elasticsearch index [{}].", result.size(), indexName);
-        return result;
+        return configuration.retrieve(
+                client,
+                indexName,
+                query,
+                () -> EmbeddingSearchRequest.builder()
+                        .queryEmbedding(embeddingModel.embed(query.text()).content())
+                        .maxResults(maxResults)
+                        .minScore(minScore)
+                        .filter(filter)
+                        .build());
     }
 
     public static Builder builder() {
